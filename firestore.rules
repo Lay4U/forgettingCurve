@@ -1,0 +1,168 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 사용자 인증 검사
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // 사용자 ID 검사
+    function isUser(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // 그룹 멤버 검사
+    function isGroupMember(groupId) {
+      return isAuthenticated() && 
+        exists(/databases/$(database)/documents/groupMembers/$(request.auth.uid + '_' + groupId));
+    }
+    
+    // 그룹 관리자 검사
+    function isGroupAdmin(groupId) {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/groupMembers/$(request.auth.uid + '_' + groupId)).data.role == 'admin';
+    }
+    
+    // 사용자 프로필 규칙
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update, delete: if isUser(userId);
+      
+      // 사용자 알림 서브컬렉션 규칙
+      match /notifications/{notificationId} {
+        allow read, write: if isUser(userId);
+      }
+      
+      // 사용자 FCM 토큰 서브컬렉션 규칙
+      match /tokens/{tokenId} {
+        allow read, write: if isUser(userId);
+      }
+    }
+    
+    // 학습 자료 규칙
+    match /materials/{materialId} {
+      allow read: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid || 
+        resource.data.isPublic == true ||
+        (resource.data.groupId != null && isGroupMember(resource.data.groupId))
+      );
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // 학습 자료 컬렉션 규칙
+    match /studyMaterials/{materialId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // 과목 컬렉션 규칙
+    match /subjects/{subjectId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // 사용자 설정 컬렉션 규칙
+    match /userSettings/{userId} {
+      allow read: if isAuthenticated() && userId == request.auth.uid;
+      allow create, update, delete: if isAuthenticated() && userId == request.auth.uid;
+    }
+    
+    // 알림 컬렉션 규칙
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // 복습 일정 규칙
+    match /reviews/{reviewId} {
+      allow read: if isAuthenticated() && resource.data.userId == request.auth.uid;
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // 그룹 규칙
+    match /groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isAuthenticated() && (
+        isGroupAdmin(groupId) || 
+        (isGroupMember(groupId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['sharedMaterials', 'updatedAt']))
+      );
+      allow delete: if isGroupAdmin(groupId);
+    }
+    
+    // 그룹 멤버 규칙
+    match /groupMembers/{membershipId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update: if isGroupAdmin(membershipId.split('_')[1]);
+      allow delete: if isGroupAdmin(membershipId.split('_')[1]) || 
+        (isAuthenticated() && request.auth.uid == membershipId.split('_')[0]);
+    }
+    
+    // 그룹 초대 규칙
+    match /groupInvites/{inviteId} {
+      allow read: if isAuthenticated() && (
+        resource.data.invitedUserId == request.auth.uid ||
+        resource.data.invitedByUserId == request.auth.uid ||
+        isGroupAdmin(resource.data.groupId)
+      );
+      allow create: if isAuthenticated() && isGroupMember(request.resource.data.groupId);
+      allow update, delete: if isAuthenticated() && (
+        resource.data.invitedUserId == request.auth.uid ||
+        resource.data.invitedByUserId == request.auth.uid ||
+        isGroupAdmin(resource.data.groupId)
+      );
+    }
+    
+    // 그룹 게시물 규칙
+    match /groupPosts/{postId} {
+      allow read: if isAuthenticated() && isGroupMember(resource.data.groupId);
+      allow create: if isAuthenticated() && isGroupMember(request.resource.data.groupId) &&
+        request.resource.data.userId == request.auth.uid;
+      allow update: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isGroupAdmin(resource.data.groupId)
+      );
+      allow delete: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isGroupAdmin(resource.data.groupId)
+      );
+    }
+    
+    // 댓글 규칙
+    match /comments/{commentId} {
+      allow read: if isAuthenticated() && (
+        resource.data.materialId != null ||
+        (resource.data.postId != null && isGroupMember(resource.data.groupId))
+      );
+      allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isAuthenticated() && resource.data.userId == request.auth.uid;
+    }
+    
+    // 게임 데이터 규칙
+    match /gameData/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isUser(userId);
+      allow delete: if isUser(userId);
+    }
+    
+    // 채팅 메시지 규칙
+    match /chatMessages/{messageId} {
+      allow read: if isAuthenticated() && isGroupMember(resource.data.groupId);
+      allow create: if isAuthenticated() && 
+        isGroupMember(request.resource.data.groupId) &&
+        request.resource.data.userId == request.auth.uid;
+      allow update: if false; // 채팅 메시지는 수정 불가
+      allow delete: if isAuthenticated() && (
+        resource.data.userId == request.auth.uid ||
+        isGroupAdmin(resource.data.groupId)
+      );
+    }
+  }
+} 
